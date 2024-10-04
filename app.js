@@ -1,32 +1,70 @@
-const express = require("express");
-const { createServer } = require("http");
-const { Server } = require("socket.io");
-const { cors } = require("cors")
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
 
 const app = express();
-const httpServer = createServer(app);
+const port = 4000; // Elige el puerto que quieras para el servidor de chat
+
+// Usar CORS para permitir conexiones desde el frontend
+app.use(cors());
+
+// Crear el servidor HTTP
+const httpServer = http.createServer(app);
+
+// Configurar Socket.IO con el servidor HTTP
 const io = new Server(httpServer, {
+    transports: ['websocket', 'polling'], // Incluye ambos transportes
     cors: {
-        origin: "https://helloflatmate.vercel.app/*",
-        methods: ["GET", "POST"]
-    }
+        origin: '*', // Reemplazar con la URL de tu aplicación Next.js para mayor seguridad
+    },
 });
 
-app.use(cors())
-
 io.on('connection', (socket) => {
-    console.log('a user connected');
-    socket.on('disconnect', () => {
-        console.log('user disconnected');
+    console.log('User connected:', socket.id);
+
+    // Evento para unirse a una sala
+    socket.on('joinChat', (roomId, callback) => {
+        handleJoinRoom(socket, roomId, callback);
     });
-})
 
-app.get('/', (req, res) => {
-    res.send('Hello World!')
-})
+    // Evento para enviar mensajes
+    socket.on('sendMessage', (message) => {
+        handleSendMessage(io, message);
+    });
 
-const PORT = process.env.PORT || 3001;
+    socket.on('disconnect', () => {
+        console.log(`User ${socket.id} disconnected`);
+    });
+});
 
-httpServer.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
-})
+// Función para gestionar la unión a una sala
+function handleJoinRoom(socket, roomId, callback) {
+    const roomIdStr = roomId.toString();
+    socket.join(roomIdStr);
+    console.log(`User ${socket.id} joined room: ${roomIdStr}`);
+    socket.emit('joinedRoom', `Te has unido a la sala ${roomIdStr}`);
+
+    if (callback) {
+        callback();
+    }
+}
+
+// Función para gestionar el envío de mensajes
+function handleSendMessage(io, message) {
+    const { roomId, text, senderId } = message;
+    const roomIdStr = roomId.toString();
+
+    if (!roomIdStr || !text || !senderId) {
+        console.error('Invalid message or room ID');
+        return io.emit('error', 'Invalid message or room ID');
+    }
+
+    console.log(`Message sent to room ${roomIdStr}: ${text} from ${senderId}`);
+    io.to(roomIdStr).emit('newMessage', message); // Emitimos el mensaje con el senderId
+}
+
+// Iniciar el servidor
+httpServer.listen(port, () => {
+    console.log(`Chat server running on http://localhost:${port}`);
+});
