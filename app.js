@@ -33,6 +33,11 @@ io.on("connection", (socket) => {
     handleSendMessage(io, message);
   });
 
+  //Evento para enviar archivos
+  socket.on("sendFile", (message) => {
+    handleSendFile(io, message)
+  })
+
   socket.on("disconnect", () => {
     console.log(`User ${socket.id} disconnected`);
   });
@@ -62,6 +67,21 @@ function handleSendMessage(io, message) {
 
   console.log(`Message sent to room ${roomIdStr}: ${text} from ${senderId}`);
   io.to(roomIdStr).emit("newMessage", message); // Emitimos el mensaje con el senderId
+}
+
+function handleSendFile(io, message) {
+  console.log("hola recibi el mensaje");
+  
+  const { roomId, senderId, image } = message;
+  const roomIdStr = roomId.toString();
+
+  if (!roomIdStr || !senderId || !image) {
+    console.error("Invalid file or room ID");
+    return io.emit("error", "Invalid file or room ID");
+  }
+
+  console.log(`File sent to room ${roomIdStr} from ${senderId}`);
+  io.to(roomIdStr).emit("newFile", message); // Emitimos el archivo como Blob en la sala
 }
 
 // Iniciar el servidor
