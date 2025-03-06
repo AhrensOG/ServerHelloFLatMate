@@ -2,89 +2,128 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const { createNotification } = require("./utils");
 
 const app = express();
-const port = process.env.PORT || 4000; // Usa el puerto proporcionado por Railway o el puerto 4000 por defecto
+const port = process.env.PORT || 4000;
 
-// Usar CORS para permitir conexiones desde el frontend
 app.use(cors());
 
-// Crear el servidor HTTP
 const httpServer = http.createServer(app);
 
-// Configurar Socket.IO con el servidor HTTP
 const io = new Server(httpServer, {
-  transports: ["websocket", "polling"], // Incluye ambos transportes
-  cors: {
-    origin: "*", // Puedes reemplazar esto con la URL de tu aplicación en producción para mayor seguridad
-  },
+    transports: ["websocket", "polling"],
+    cors: {
+        origin: "*",
+    },
 });
+
+const activeUsers = {};
 
 io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
+    const { type, roomId, userId } = socket.handshake.query;
 
-  // Evento para unirse a una sala
-  socket.on("joinChat", (roomId, callback) => {
-    handleJoinRoom(socket, roomId, callback);
-  });
+    console.log(`📡 Nueva conexión: ${type} - Socket ID: ${socket.id}`);
 
-  // Evento para enviar mensajes
-  socket.on("sendMessage", (message) => {
-    handleSendMessage(io, message);
-  });
+    if (type === "notification") {
+        activeUsers[userId] = socket.id;
+        console.log(`🔔 Usuario ${userId} conectado a notificaciones.`);
+    } else if (type === "chat" && roomId) {
+        socket.join(roomId);
+        console.log(`💬 Usuario ${userId} se unió al chat ${roomId}`);
+    }
 
-  //Evento para enviar archivos
-  socket.on("sendFile", (message) => {
-    handleSendFile(io, message)
-  })
+    socket.on("userConnected", (userId, callback) => {
+        activeUsers[userId] = socket.id;
+        callback();
+    });
 
-  socket.on("disconnect", () => {
-    console.log(`User ${socket.id} disconnected`);
-  });
+    socket.on("joinChat", (roomId, userId, callback) => {
+        handleJoinRoom(socket, roomId, userId, callback);
+    });
+
+    socket.on("sendMessage", (message) => {
+        handleSendMessage(io, message);
+    });
+
+    socket.on("sendFile", (message) => {
+        handleSendFile(io, message);
+    });
+
+    socket.on("disconnect", () => {
+        console.log(`❌ Socket ${socket.id} desconectado.`);
+        if (type === "notification") {
+            delete activeUsers[userId];
+        }
+    });
 });
 
-// Función para gestionar la unión a una sala
-function handleJoinRoom(socket, roomId, callback) {
-  const roomIdStr = roomId.toString();
-  socket.join(roomIdStr);
-  console.log(`User ${socket.id} joined room: ${roomIdStr}`);
-  socket.emit("joinedRoom", `Te has unido a la sala ${roomIdStr}`);
-
-  if (callback) {
-    callback();
-  }
+function handleJoinRoom(socket, roomId, userId, callback) {
+    const roomIdStr = roomId.toString();
+    socket.join(roomIdStr);
+    console.log(`User ${userId} joined room: ${roomIdStr}`);
+    if (callback) callback();
 }
 
-// Función para gestionar el envío de mensajes
-function handleSendMessage(io, message) {
-  const { roomId, text, senderId } = message;
-  const roomIdStr = roomId.toString();
+async function handleSendMessage(io, message) {
+    const { roomId, text, senderId, receiverId } = message;
+    const roomIdStr = roomId.toString();
 
-  if (!roomIdStr || !text || !senderId) {
-    console.error("Invalid message or room ID");
-    return io.emit("error", "Invalid message or room ID");
-  }
+    if (!roomIdStr || !text || !senderId) {
+        console.error("Invalid message or room ID");
+        return;
+    }
 
-  console.log(`Message sent to room ${roomIdStr}: ${text} from ${senderId}`);
-  io.to(roomIdStr).emit("newMessage", message); // Emitimos el mensaje con el senderId
+    console.log(`📩 Mensaje enviado en sala ${roomIdStr}: ${text} de ${senderId}`);
+    io.to(roomIdStr).emit("newMessage", message);
+
+    const socketsInRoom = io.sockets.adapter.rooms.get(roomIdStr);
+    const isReceiverInRoom = socketsInRoom && [...socketsInRoom].some((socketId) => activeUsers[receiverId] === socketId);
+
+    if (!isReceiverInRoom) {
+        const receiverSocketId = activeUsers[receiverId];
+        console.log(activeUsers);
+
+        console.log(`📡 Enviando notificación de nuevo mensaje a ${receiverSocketId}`);
+        await createNotification(senderId, roomIdStr, receiverId);
+
+        if (receiverSocketId) {
+            io.to(receiverSocketId).emit("newNotification", {
+                message: "You have a new message",
+                chatId: roomIdStr,
+                senderId,
+            });
+        }
+    }
 }
 
 function handleSendFile(io, message) {
-  console.log("hola recibi el mensaje");
-  
-  const { roomId, senderId, image } = message;
-  const roomIdStr = roomId.toString();
+    const { roomId, senderId, image, receiverId } = message;
+    const roomIdStr = roomId.toString();
 
-  if (!roomIdStr || !senderId || !image) {
-    console.error("Invalid file or room ID");
-    return io.emit("error", "Invalid file or room ID");
-  }
+    if (!roomIdStr || !senderId || !image) {
+        console.error("Invalid file or room ID");
+        return;
+    }
 
-  console.log(`File sent to room ${roomIdStr} from ${senderId}`);
-  io.to(roomIdStr).emit("newFile", message); // Emitimos el archivo como Blob en la sala
+    console.log(`📤 Archivo enviado a sala ${roomIdStr} desde ${senderId}`);
+    io.to(roomIdStr).emit("newFile", message);
+
+    const socketsInRoom = io.sockets.adapter.rooms.get(roomIdStr);
+    const isReceiverInChat = socketsInRoom && [...socketsInRoom].some((socketId) => activeUsers[receiverId] === socketId);
+
+    if (!isReceiverInChat) {
+        const receiverSocketId = activeUsers[receiverId];
+        if (receiverSocketId) {
+            io.to(receiverSocketId).emit("newNotification", {
+                message: "Has recibido un archivo",
+                chatId: roomId,
+                senderId,
+            });
+        }
+    }
 }
 
-// Iniciar el servidor
 httpServer.listen(port, () => {
-  console.log(`Chat server running on port ${port}`);
+    console.log(`🚀 Servidor de chat ejecutándose en el puerto ${port}`);
 });
