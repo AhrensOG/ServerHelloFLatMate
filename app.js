@@ -22,21 +22,29 @@ const activeUsers = {};
 
 io.on("connection", (socket) => {
     const { type, roomId, userId } = socket.handshake.query;
+    console.log(userId);
 
     console.log(`📡 Nueva conexión: ${type} - Socket ID: ${socket.id}`);
 
+    if (!userId) {
+        console.error("🚨 Error: userId no recibido en la conexión.");
+        return;
+    }
+
+    // 🔹 Guardar cada `socket.id` del usuario en un Set
+    if (!activeUsers[userId]) activeUsers[userId] = new Set();
+    activeUsers[userId].add(socket.id);
+
+    // 🔔 Manejo de notificaciones
     if (type === "notification") {
-        activeUsers[userId] = socket.id;
-        console.log(`🔔 Usuario ${userId} conectado a notificaciones.`);
-    } else if (type === "chat" && roomId) {
+        console.log(`🔔 Usuario ${userId} conectado a notificaciones con sockets: ${[...activeUsers[userId]]}`);
+    }
+
+    // 💬 Manejo de chats
+    if (type === "chat" && roomId) {
         socket.join(roomId);
         console.log(`💬 Usuario ${userId} se unió al chat ${roomId}`);
     }
-
-    socket.on("userConnected", (userId, callback) => {
-        activeUsers[userId] = socket.id;
-        callback();
-    });
 
     socket.on("joinChat", (roomId, userId, callback) => {
         handleJoinRoom(socket, roomId, userId, callback);
@@ -50,13 +58,27 @@ io.on("connection", (socket) => {
         handleSendFile(io, message);
     });
 
+    // 🛑 Manejar la desconexión
     socket.on("disconnect", () => {
         console.log(`❌ Socket ${socket.id} desconectado.`);
-        if (type === "notification") {
-            delete activeUsers[userId];
+        if (activeUsers[userId]) {
+            activeUsers[userId].delete(socket.id);
+            if (activeUsers[userId].size === 0) delete activeUsers[userId]; // Eliminar usuario si no tiene sockets activos
         }
     });
 });
+
+// 🔄 Función para verificar si un usuario tiene **algún** socket en la sala
+function isUserInRoom(io, userId, roomIdStr) {
+    if (!activeUsers[userId]) return false;
+
+    for (const socketId of activeUsers[userId]) {
+        if (io.sockets.adapter.sids.get(socketId)?.has(roomIdStr)) {
+            return true; // ✅ Si al menos un socket del usuario está en la sala, retornamos `true`
+        }
+    }
+    return false;
+}
 
 function handleJoinRoom(socket, roomId, userId, callback) {
     const roomIdStr = roomId.toString();
@@ -69,35 +91,36 @@ async function handleSendMessage(io, message) {
     const { roomId, text, senderId, receiverId } = message;
     const roomIdStr = roomId.toString();
 
-    if (!roomIdStr || !text || !senderId) {
-        console.error("Invalid message or room ID");
+    if (!roomIdStr || !text || !senderId || !receiverId) {
+        console.error("❌ Mensaje inválido o datos incompletos.");
         return;
     }
 
     console.log(`📩 Mensaje enviado en sala ${roomIdStr}: ${text} de ${senderId}`);
+
+    // 🔹 Emitir el mensaje a la sala
     io.to(roomIdStr).emit("newMessage", message);
 
-    const socketsInRoom = io.sockets.adapter.rooms.get(roomIdStr);
-    const isReceiverInRoom = socketsInRoom && [...socketsInRoom].some((socketId) => activeUsers[receiverId] === socketId);
+    // ✅ Verificar si el receptor tiene algún socket en la sala
+    const isReceiverInRoom = isUserInRoom(io, receiverId, roomIdStr);
+    console.log(`🎯 Usuario ${receiverId} en la sala: ${isReceiverInRoom ? "Sí" : "No"}`);
 
+    // 🔔 Enviar notificación SOLO si el receptor no está en el chat
     if (!isReceiverInRoom) {
-        const receiverSocketId = activeUsers[receiverId];
-        console.log(activeUsers);
-
-        console.log(`📡 Enviando notificación de nuevo mensaje a ${receiverSocketId}`);
+        console.log(`📡 Enviando notificación a ${receiverId} - Sockets: ${[...(activeUsers[receiverId] || [])]}`);
         await createNotification(senderId, roomIdStr, receiverId);
 
-        if (receiverSocketId) {
-            io.to(receiverSocketId).emit("newNotification", {
+        activeUsers[receiverId]?.forEach((socketId) => {
+            io.to(socketId).emit("newNotification", {
                 message: "You have a new message",
                 chatId: roomIdStr,
                 senderId,
             });
-        }
+        });
     }
 }
 
-function handleSendFile(io, message) {
+async function handleSendFile(io, message) {
     const { roomId, senderId, image, receiverId } = message;
     const roomIdStr = roomId.toString();
 
@@ -121,6 +144,23 @@ function handleSendFile(io, message) {
                 senderId,
             });
         }
+    }
+    // ✅ Verificar si el receptor tiene algún socket en la sala
+    const isReceiverInRoom = isUserInRoom(io, receiverId, roomIdStr);
+    console.log(`🎯 Usuario ${receiverId} en la sala: ${isReceiverInRoom ? "Sí" : "No"}`);
+
+    // 🔔 Enviar notificación SOLO si el receptor no está en el chat
+    if (!isReceiverInRoom) {
+        console.log(`📡 Enviando notificación a ${receiverId} - Sockets: ${[...(activeUsers[receiverId] || [])]}`);
+        await createNotification(senderId, roomIdStr, receiverId);
+
+        activeUsers[receiverId]?.forEach((socketId) => {
+            io.to(socketId).emit("newNotification", {
+                message: "You have a new message",
+                chatId: roomIdStr,
+                senderId,
+            });
+        });
     }
 }
 
