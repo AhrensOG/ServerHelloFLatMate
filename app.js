@@ -2,7 +2,7 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
-const { createNotification } = require("./utils");
+const { createNotification, getParticipantsId } = require("./utils");
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -88,10 +88,12 @@ function handleJoinRoom(socket, roomId, userId, callback) {
 }
 
 async function handleSendMessage(io, message) {
-    const { roomId, text, senderId, receiverId } = message;
+    const { roomId, text, senderId, receiverId, typeChat } = message;
     const roomIdStr = roomId.toString();
 
-    if (!roomIdStr || !text || !senderId || !receiverId) {
+    if (!roomIdStr || !text || !senderId) {
+        console.log(message);
+
         console.error("❌ Mensaje inválido o datos incompletos.");
         return;
     }
@@ -101,66 +103,131 @@ async function handleSendMessage(io, message) {
     // 🔹 Emitir el mensaje a la sala
     io.to(roomIdStr).emit("newMessage", message);
 
-    // ✅ Verificar si el receptor tiene algún socket en la sala
-    const isReceiverInRoom = isUserInRoom(io, receiverId, roomIdStr);
-    console.log(`🎯 Usuario ${receiverId} en la sala: ${isReceiverInRoom ? "Sí" : "No"}`);
+    const isGroupChat = typeChat === "group";
+    const isSuppChat = typeChat === "supp";
+    console.log(typeChat);
 
-    // 🔔 Enviar notificación SOLO si el receptor no está en el chat
-    if (!isReceiverInRoom) {
-        console.log(`📡 Enviando notificación a ${receiverId} - Sockets: ${[...(activeUsers[receiverId] || [])]}`);
-        await createNotification(senderId, roomIdStr, receiverId);
+    switch (typeChat) {
+        case "group":
+            {
+                const participants = await getParticipantsId(roomIdStr);
+                console.log(`👥 Participantes en el chat: ${participants}`);
 
-        activeUsers[receiverId]?.forEach((socketId) => {
-            io.to(socketId).emit("newNotification", {
-                message: "You have a new message",
-                chatId: roomIdStr,
-                senderId,
-            });
-        });
+                // 🔔 Notificar a todos los miembros del grupo EXCEPTO el remitente
+                participants.forEach(async (participant) => {
+                    if (participant.id !== senderId) {
+                        const isUserActive = isUserInRoom(io, participant.id, roomIdStr);
+                        if (!isUserActive) {
+                            console.log(`📡 Enviando notificación a ${participant.participantId}`);
+                            await createNotification(senderId, roomIdStr, participant.participantId, typeChat);
+
+                            activeUsers[participant.id]?.forEach((socketId) => {
+                                io.to(socketId).emit("newNotification", {
+                                    message: "You have a new group message",
+                                    chatId: roomIdStr,
+                                    senderId,
+                                });
+                            });
+                        }
+                    }
+                });
+            }
+            break;
+        case "supp":
+            {
+                // ✅ Si es un chat de support, verificar si el receptor está en la sala
+                const isReceiverInRoom = isUserInRoom(io, receiverId, roomIdStr);
+                if (!isReceiverInRoom) {
+                    console.log(`📡 Enviando notificación privada a ${receiverId}`);
+                    await createNotification(senderId, roomIdStr, receiverId, typeChat);
+                    activeUsers[receiverId]?.forEach((socketId) => {
+                        io.to(socketId).emit("newNotification", {
+                            message: "You have a new message",
+                            chatId: roomIdStr,
+                            senderId,
+                        });
+                    });
+                }
+            }
+            break;
+        case "priv":
+            {
+                // ✅ Si es un chat privado, verificar si el receptor está en la sala
+                const isReceiverInRoom = isUserInRoom(io, receiverId, roomIdStr);
+                if (!isReceiverInRoom) {
+                    console.log(`📡 Enviando notificación privada a ${receiverId}`);
+                    await createNotification(senderId, roomIdStr, receiverId, typeChat);
+                    activeUsers[receiverId]?.forEach((socketId) => {
+                        io.to(socketId).emit("newNotification", {
+                            message: "You have a new message",
+                            chatId: roomIdStr,
+                            senderId,
+                        });
+                    });
+                }
+                break;
+            }
+            break;
+        default:
+            break;
     }
 }
 
 async function handleSendFile(io, message) {
-    const { roomId, senderId, image, receiverId } = message;
+    const { roomId, senderId, image, receiverId, typeChat } = message; // Añadir typeChat
     const roomIdStr = roomId.toString();
 
     if (!roomIdStr || !senderId || !image) {
-        console.error("Invalid file or room ID");
+        console.error("❌ Archivo inválido o datos incompletos");
         return;
     }
 
     console.log(`📤 Archivo enviado a sala ${roomIdStr} desde ${senderId}`);
     io.to(roomIdStr).emit("newFile", message);
 
-    const socketsInRoom = io.sockets.adapter.rooms.get(roomIdStr);
-    const isReceiverInChat = socketsInRoom && [...socketsInRoom].some((socketId) => activeUsers[receiverId] === socketId);
+    const isGroupChat = typeChat === "group";
+    const isSuppChat = typeChat === "supp";
 
-    if (!isReceiverInChat) {
-        const receiverSocketId = activeUsers[receiverId];
-        if (receiverSocketId) {
-            io.to(receiverSocketId).emit("newNotification", {
-                message: "Has recibido un archivo",
-                chatId: roomId,
-                senderId,
+    if (isGroupChat) {
+        const participants = await getParticipantsId(roomIdStr);
+        console.log("👥 Participantes en el chat grupal:", participants);
+
+        // Notificar a todos los miembros del grupo excepto el remitente
+        participants.forEach(async (participant) => {
+            if (participant.id !== senderId) {
+                const isUserActive = isUserInRoom(io, participant.id, roomIdStr);
+
+                if (!isUserActive) {
+                    console.log(`📡 Enviando notificación grupal a ${participant.participantId}`);
+                    await createNotification(senderId, roomIdStr, participant.participantId);
+
+                    activeUsers[participant.id]?.forEach((socketId) => {
+                        io.to(socketId).emit("newNotification", {
+                            message: "Has recibido un archivo en el grupo",
+                            chatId: roomIdStr,
+                            senderId,
+                        });
+                    });
+                }
+            }
+        });
+    } else {
+        // Chat privado
+        const isReceiverInRoom = isUserInRoom(io, receiverId, roomIdStr);
+        console.log(`🎯 Usuario ${receiverId} en la sala: ${isReceiverInRoom ? "Sí" : "No"}`);
+
+        if (!isReceiverInRoom) {
+            console.log(`📡 Enviando notificación privada a ${receiverId}`);
+            await createNotification(senderId, roomIdStr, receiverId);
+
+            activeUsers[receiverId]?.forEach((socketId) => {
+                io.to(socketId).emit("newNotification", {
+                    message: "Has recibido un archivo",
+                    chatId: roomIdStr,
+                    senderId,
+                });
             });
         }
-    }
-    // ✅ Verificar si el receptor tiene algún socket en la sala
-    const isReceiverInRoom = isUserInRoom(io, receiverId, roomIdStr);
-    console.log(`🎯 Usuario ${receiverId} en la sala: ${isReceiverInRoom ? "Sí" : "No"}`);
-
-    // 🔔 Enviar notificación SOLO si el receptor no está en el chat
-    if (!isReceiverInRoom) {
-        console.log(`📡 Enviando notificación a ${receiverId} - Sockets: ${[...(activeUsers[receiverId] || [])]}`);
-        await createNotification(senderId, roomIdStr, receiverId);
-
-        activeUsers[receiverId]?.forEach((socketId) => {
-            io.to(socketId).emit("newNotification", {
-                message: "You have a new message",
-                chatId: roomIdStr,
-                senderId,
-            });
-        });
     }
 }
 
