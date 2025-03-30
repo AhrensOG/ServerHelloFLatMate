@@ -114,7 +114,7 @@ async function handleSendMessage(io, message) {
                 console.log(`👥 Participantes en el chat: ${participants}`);
 
                 // 🔔 Notificar a todos los miembros del grupo EXCEPTO el remitente
-                participants.forEach(async (participant) => {
+                participants?.forEach(async (participant) => {
                     if (participant.id !== senderId) {
                         const isUserActive = isUserInRoom(io, participant.id, roomIdStr);
                         if (!isUserActive) {
